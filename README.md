@@ -16,6 +16,12 @@ The bot accepts private chats. Commands: `/start`, `/help`, `/positions`, `/test
 
 Open wallets poll every 15 seconds; idle wallets every 180 seconds. A newly opened position may therefore take up to about three minutes to be discovered, plus upstream latency. Polling is best effort and not a liquidation guarantee.
 
+## Limit-order fill notifications
+
+Confirmed limit opens send one short Telegram message with pair, direction and execution entry price. A separate Base event scanner runs every 15 seconds and waits five blocks; normal latency is roughly 10–30 seconds plus provider/delivery latency, including for wallets with no open positions. It recognizes the deployed `LimitExecuted` OPEN event, not disappeared orders. Cancellations, TP/SL executions and liquidations do not produce fill messages.
+
+The durable block cursor and queued messages commit together, so restart/retry does not replay scanned events. First installation establishes a current-block baseline and does not announce old trades. Mute/stop applies; muted fills are consumed silently. The existing delivery queue is at least once. Set `LIMIT_FILLS_RPC_URL` for a dedicated Base RPC; the default is PublicNode. Sustained scanner failures degrade `/health` with `limit_fills_stale`.
+
 ## Alert delivery
 
 SQLite stores subscriptions, preferences, position snapshots and a durable outbox. Alert decisions and enqueueing commit together. A separate worker retries failed Telegram sends across restarts. `/mute`, `/stop`, and wallet changes cancel pending messages. Blocked bots pause that chat. Telegram rate limits delay delivery; permanently invalid payloads stay queued with hourly retries for operator investigation.

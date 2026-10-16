@@ -117,6 +117,9 @@ class Monitor:
                 reasons.append("upstream_stale")
             if sub.is_hot and now - self.wallet_prices.get(key, baseline) > 180:
                 reasons.append("prices_stale")
+        fills = getattr(self, "fill_watcher", None)
+        if fills and now - (fills.last_success or fills.started) > 180:
+            reasons.append("limit_fills_stale")
         reasons = sorted(set(reasons))
         oldest_age = now-oldest if oldest else 0
         if oldest_age > 300:
@@ -124,4 +127,5 @@ class Monitor:
         return dict(status="degraded" if reasons else "ok", reasons=reasons,
                     last_poll=self.last_poll, last_successful_fetch=self.last_success,
                     last_delivery=self.last_delivery, fetch_failures=self.fetch_failures,
+                    last_limit_fill_scan=fills.last_success if fills else None,
                     queue_depth=depth, oldest_queued_seconds=oldest_age)

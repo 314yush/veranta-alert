@@ -119,6 +119,17 @@ def main() -> None:
         app.bot_data["alerter"] = alerter
         monitor = Monitor(app, db, client, alerter)
         app.bot_data["monitor"] = monitor
+        from .limit_fills import LimitFillWatcher
+        fills = LimitFillWatcher(db, client)
+        monitor.fill_watcher = fills
+        app.bot_data["limit_fills"] = fills
+        # Bound baseline/catch-up work so RPC delays cannot block bot startup.
+        import asyncio
+        try:
+            await asyncio.wait_for(fills.tick(None), timeout=5)
+        except TimeoutError:
+            logger.warning("Limit fill startup scan deferred to scheduled retry")
+        app.job_queue.run_repeating(fills.tick, interval=15, first=5, name="limit-fill-monitor")
         from .health import start_health_server
         app.bot_data["health_server"] = await start_health_server(monitor)
         app.job_queue.run_repeating(monitor.deliver_pending, interval=2, first=2, name="alert-delivery")
@@ -182,6 +193,9 @@ def main() -> None:
         if health:
             health.close()
             await health.wait_closed()
+        fills = app.bot_data.get("limit_fills")
+        if fills:
+            await fills.close()
         await client.aclose()
         await db.close()
         try:

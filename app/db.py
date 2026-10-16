@@ -202,6 +202,7 @@ class Database:
             INSERT INTO subscriptions (chat_id, wallet, muted, is_hot, created_at, updated_at)
             VALUES (?, ?, 0, 0, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET
+                created_at=CASE WHEN subscriptions.wallet=excluded.wallet THEN subscriptions.created_at ELSE excluded.created_at END,
                 wallet=excluded.wallet,
                 is_hot=CASE WHEN subscriptions.wallet=excluded.wallet THEN subscriptions.is_hot ELSE 0 END,
                 muted=0,
