@@ -76,10 +76,10 @@ BINANCE_URLS = (
 OKX_URL = "https://www.okx.com/api/v5/market/candles"
 COINBASE_URL = "https://api.exchange.coinbase.com/products/{product}/candles"
 
-DEFAULT_INTERVAL = "15m"
-DEFAULT_LIMIT = 96  # 96 × 15m ≈ 24h
+DEFAULT_INTERVAL = "5m"
+DEFAULT_LIMIT = 24  # Two hours of five-minute candles.
 REQUEST_TIMEOUT_S = 2.5
-CACHE_TTL_S = 45.0
+CACHE_TTL_S = 5.0
 _UA = {"User-Agent": "veranta-alert-bot/1.0"}
 
 # (base, interval, limit) → (expires_at, candles)

@@ -1,21 +1,21 @@
 """Premium fintech position ticket (Pillow). Used when LW candles are unavailable.
 
-1080×720 near-black card: wordmark, hero PnL, optional Lazer sparkline, stats grid.
-Open/mark/liq hairlines are drawn on the spark *only* when they sit inside the
-tape's price range — otherwise they become chips so a far TP/liq cannot flatten
-the plot.
+1080×720 card with hero PnL, short-interval observed candles and risk stats.
+Risk levels never expand the price scale. Missing observations stay missing.
 """
 
 from __future__ import annotations
 
 import io
 import logging
+import math
 import time
 from pathlib import Path
 
 from .config import LIQ_PNL_PERCENT
 from .formatting import display_pair
 from .ticks import load_ticks
+from .candles import build_candles, prepare_tape
 
 logger = logging.getLogger(__name__)
 
@@ -230,14 +230,19 @@ def _downsample(pts: list[tuple[float, float]], n: int = 240) -> list[tuple[floa
     return out
 
 
+def _candle_width(slot_width: float) -> float:
+    """Keep an 18% gutter instead of capping wide time slots at 12px."""
+    return slot_width * .82
+
+
 def _tape_range(prices: list[float]) -> tuple[float, float]:
     lo = min(prices)
     hi = max(prices)
     span = hi - lo
-    if span <= 0 or span / max(abs(lo), 1e-9) < 2e-5:
-        pad = max(abs(lo) * 0.0008, 1e-6)
+    if span <= 0:
+        pad = max(abs(lo) * 0.00002, 1e-9)
         return lo - pad, hi + pad
-    pad = span * 0.14
+    pad = span * 0.06
     return lo - pad, hi + pad
 
 
@@ -295,7 +300,13 @@ def render_ticket(
     buffer_pts: float | None = None,
     ticks: list[tuple[float, float]] | None = None,
     liq_pnl_percent: float = LIQ_PNL_PERCENT,
+    candle_interval_s: int = 300,
+    window_s: int = 7200,
+    chart_label: str = "LOCAL OBSERVATIONS",
+    chart_candles: list[dict] | None = None,
 ) -> bytes | None:
+    if candle_interval_s <= 0 or window_s < candle_interval_s:
+        raise ValueError("Window must contain at least one positive candle interval")
     try:
         from PIL import Image, ImageDraw, ImageFilter
     except Exception:  # noqa: BLE001
@@ -325,13 +336,9 @@ def render_ticket(
     pnl_color = accent
 
     if ticks is None and pair_index is not None:
-        ticks = load_ticks(int(pair_index))
-    ticks = list(ticks or [])
-    if mark and mark > 0:
-        now_ts = time.time()
-        if not ticks or abs(ticks[-1][1] - float(mark)) > 0 or now_ts - ticks[-1][0] > 2:
-            # Pin the live mark as the rightmost sample so the tape ends "now".
-            ticks = ticks + [(now_ts, float(mark))]
+        # Never downsample before OHLC aggregation: that discards highs/lows.
+        ticks = load_ticks(int(pair_index), hours=window_s/3600, limit=0)
+    ticks = prepare_tape(ticks or [], window=window_s)
 
     S = SCALE
     W, H = TICKET_W * S, TICKET_H * S
@@ -441,189 +448,74 @@ def render_ticket(
     if pct_txt:
         draw.text((right, hero_base), pct_txt, fill=pnl_color, font=pct_font, anchor="rs")
 
-    # --- Spark panel -------------------------------------------------------
-    sx0, sy0 = mx, 206 * S
-    sx1, sy1 = right, 484 * S
-    _rounded(
-        draw,
-        [sx0, sy0, sx1, sy1],
-        radius=14 * S,
-        fill=_PANEL,
-        outline=_HAIR,
-        width=S,
-    )
-    draw.line([(sx0 + 8 * S, sy0 + S), (sx1 - 8 * S, sy0 + S)], fill=_PANEL_TOP, width=S)
-
-    tape = _downsample(ticks, 240) if ticks else []
-    prices = [p for _ts, p in tape if p > 0]
-    has_spark = len(prices) >= 2
-    chips: list[tuple[str, str, tuple[int, int, int], str]] = []
-    in_open = in_liq = in_tp = in_sl = in_mark = False
-    data_lo = data_hi = None
-    if has_spark:
-        data_lo, data_hi = min(prices), max(prices)
-
-        def consider(lab, price, color):
-            if not price or price <= 0:
-                return False
-            if _in_data_range(price, data_lo, data_hi):
-                return True
-            direction = "up" if price > data_hi else "down"
-            chips.append((lab, _fmt_price(price), color, direction))
-            return False
-
-        in_open = consider("OPEN", open_price, _OPEN_LINE)
-        in_liq = consider("LIQ", liquidation, _RED)
-        in_tp = consider("TP", tp, _TEAL)
-        in_sl = consider("SL", sl, (255, 171, 64))
-        in_mark = bool(mark and mark > 0 and _in_data_range(mark, data_lo, data_hi))
-
-    pad_l, pad_r = 20 * S, 78 * S
-    pad_t = (48 if chips else 24) * S
-    pad_b = 30 * S
-    plot_x0, plot_x1 = sx0 + pad_l, sx1 - pad_r
-    plot_y0, plot_y1 = sy0 + pad_t, sy1 - pad_b
-
-    overlay = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-    od = ImageDraw.Draw(overlay)
-
-    if has_spark:
-        vis_lo, vis_hi = _tape_range(prices)
-
-        def py(price: float) -> float:
-            return _y_for(price, vis_lo, vis_hi, plot_y0, plot_y1)
-
-        n = len(tape)
-        xs = [plot_x0 + (plot_x1 - plot_x0) * (i / (n - 1)) for i in range(n)]
-        pts = [(xs[i], py(tape[i][1])) for i in range(n)]
-
-        area = pts + [(pts[-1][0], plot_y1), (pts[0][0], plot_y1)]
-        od.polygon(area, fill=(*accent, 32))
-
-        glow = Image.new("RGBA", (W, H), (0, 0, 0, 0))
-        gd = ImageDraw.Draw(glow)
-        gd.line(pts, fill=(*accent, 90), width=5 * S, joint="curve")
-        glow = glow.filter(ImageFilter.GaussianBlur(radius=2.2 * S))
-        overlay = Image.alpha_composite(overlay, glow)
-        od = ImageDraw.Draw(overlay)
-
-        od.line(pts, fill=(*accent, 255), width=3 * S, joint="curve")
-
-        ex, ey = pts[-1]
-        r = 5 * S
-        od.ellipse(
-            [ex - r - 3 * S, ey - r - 3 * S, ex + r + 3 * S, ey + r + 3 * S],
-            fill=(*accent, 55),
-        )
-        od.ellipse(
-            [ex - r, ey - r, ex + r, ey + r],
-            fill=(*accent, 255),
-            outline=_WHITE + (230,),
-            width=S,
-        )
-
-        def hair(price, color, dashed=False, width=S):
-            y = py(float(price))
-            if dashed:
-                _dashed_hline(
-                    od, plot_x0, plot_x1, y, (*color, 165),
-                    width=width, dash=9 * S, gap=6 * S,
-                )
+    # Observed candles: scale only to actual prices; risk levels live in the stats.
+    sx0, sy0, sx1, sy1 = mx, 206 * S, right, 484 * S
+    _rounded(draw, [sx0, sy0, sx1, sy1], 14 * S, fill=_PANEL, outline=_HAIR, width=S)
+    interval = candle_interval_s
+    candles = build_candles(ticks, interval) if chart_candles is None else chart_candles
+    age = max(0, time.time() - ticks[-1][0]) if ticks else 0
+    status = 'COLLECTING'
+    if candles:
+        interval_label = f'{interval}s' if interval < 60 else f'{interval//60}m'
+        status = f'{interval_label} CANDLES  ·  {chart_label}'
+        if candles[-1]['time'] == int(time.time() // interval)*interval:
+            status += '  ·  LAST BAR DEVELOPING'
+        if age > 15:
+            status += f'  ·  LAST UPDATE {int(age)}s AGO'
+        elif len(candles) < 3 or sum(c.get('count', 2) == 1 for c in candles) > len(candles)/2:
+            status += '  ·  PARTIAL HISTORY'
+        elif all(c['high'] == candles[0]['high'] == c['low'] for c in candles):
+            status += '  ·  UNCHANGED'
+    draw.text((sx0 + 18*S, sy0 + 14*S), status, fill=_MUTED, font=fonts['footer'])
+    plot_x0, plot_x1 = sx0 + 22*S, sx1 - 118*S
+    plot_y0, plot_y1 = sy0 + 50*S, sy1 - 36*S
+    if candles:
+        prices = [p for c in candles for p in (c['low'], c['high'])]
+        lo, hi = _tape_range(prices)
+        py = lambda p: _y_for(p, lo, hi, plot_y0, plot_y1)
+        decimals = min(10, max(2, int(math.ceil(-math.log10((hi-lo)/3))) + 1))
+        # Keep the requested time window; sparse history stays at its actual time.
+        end = int(time.time() // interval) * interval + interval
+        start = min(candles[0]['time'], end - window_s)
+        span = end - start
+        px = lambda ts: plot_x0 + (ts - start) / span * (plot_x1 - plot_x0)
+        for i in range(4):
+            price = lo + (hi-lo) * i/3
+            y = py(price)
+            draw.line([(plot_x0, y), (plot_x1, y)], fill=_HAIR, width=S)
+            draw.text((plot_x1 + 12*S, y), f'${price:,.{decimals}f}', fill=_MUTED,
+                      font=fonts['axis'], anchor='lm')
+        for i in range(4):
+            ts = start + span*i/3
+            x = px(ts)
+            label = time.strftime('%H:%M:%S' if interval < 60 else '%H:%M', time.gmtime(ts))
+            draw.text((x, plot_y1 + 14*S), label, fill=_MUTED,
+                      font=fonts['footer'], anchor='mt')
+        width = _candle_width((plot_x1-plot_x0) * interval/span)
+        for c in candles:
+            x = px(c['time'] + interval/2)
+            color = _TEAL if c['close'] >= c['open'] else _RED
+            if c.get('count', 2) == 1:
+                y = py(c['close'])
+                draw.ellipse([x-2*S, y-2*S, x+2*S, y+2*S], fill=_MUTED)
+                continue
+            draw.line([(x, py(c['high'])), (x, py(c['low']))], fill=color, width=S)
+            top, bottom = sorted([py(c['open']), py(c['close'])])
+            if bottom-top < 2*S:
+                draw.line([(x-width/2, top), (x+width/2, top)], fill=color, width=2*S)
             else:
-                od.line([(plot_x0, y), (plot_x1, y)], fill=(*color, 150), width=width)
-
-        if in_open and open_price:
-            hair(open_price, _OPEN_LINE, dashed=True)
-        if in_liq and liquidation:
-            hair(liquidation, _RED, dashed=False)
-        if in_tp and tp:
-            hair(tp, _TEAL, dashed=True)
-        if in_sl and sl:
-            hair(sl, (255, 171, 64), dashed=True)
-        if in_mark and mark:
-            hair(mark, _WHITE, dashed=False, width=S)
-
-        hi_s = _fmt_price(data_hi)
-        lo_s = _fmt_price(data_lo)
-        od.text((plot_x1 + 10 * S, plot_y0 - 2 * S), hi_s, fill=(*_MUTED, 255), font=fonts["axis"])
-        od.text((plot_x1 + 10 * S, plot_y1 - 12 * S), lo_s, fill=(*_MUTED, 255), font=fonts["axis"])
-
-        dur = _duration_label(tape)
-        od.text((sx0 + 16 * S, sy1 - 22 * S), dur, fill=(*_LABEL, 255), font=fonts["footer"])
-        now_lab = "NOW"
-        nw = _wh(draw, now_lab, fonts["footer"])[0]
-        od.text((plot_x1 - nw, sy1 - 22 * S), now_lab, fill=(*_LABEL, 255), font=fonts["footer"])
+                draw.rectangle([x-width/2, top, x+width/2, bottom], fill=color)
+        # Subtle level hairlines stay behind the candle detail in visual weight.
+        for price, color in [(open_price, _OPEN_LINE), (liquidation, _RED),
+                             (tp, _TEAL), (sl, (255,171,64))]:
+            if price and lo <= price <= hi:
+                _dashed_hline(draw, plot_x0, plot_x1, py(price), color, width=S, dash=4*S, gap=8*S)
+        draw.text((sx1-18*S, sy1-16*S), 'UTC', fill=_LABEL, font=fonts['footer'], anchor='rs')
     else:
-        mid_y = (plot_y0 + plot_y1) / 2
-        _dashed_hline(
-            od, plot_x0, plot_x1, mid_y, (*_HAIR, 255),
-            width=S, dash=8 * S, gap=8 * S,
-        )
-        if mark and mark > 0:
-            ex, ey = plot_x1, mid_y
-            r = 5 * S
-            od.ellipse(
-                [ex - r - 6 * S, ey - r - 6 * S, ex + r + 6 * S, ey + r + 6 * S],
-                fill=(*accent, 40),
-            )
-            od.ellipse(
-                [ex - r, ey - r, ex + r, ey + r],
-                fill=(*accent, 255),
-                outline=_WHITE + (220,),
-                width=S,
-            )
-            mk = _fmt_price(mark)
-            mw, mh = _wh(draw, mk, fonts["axis"])
-            od.text(
-                (ex - mw - 14 * S, ey - mh - 10 * S),
-                mk,
-                fill=(*_TEXT, 255),
-                font=fonts["axis"],
-            )
-        msg = "LAZER TAPE  ·  COLLECTING"
-        mw, mh = _wh(draw, msg, fonts["empty"])
-        od.text(
-            ((sx0 + sx1) / 2 - mw / 2, mid_y - mh - 22 * S),
-            msg,
-            fill=(*_MUTED, 255),
-            font=fonts["empty"],
-        )
-        sub = "History fills while the bot runs"
-        sw, _sh = _wh(draw, sub, fonts["footer"])
-        od.text(
-            ((sx0 + sx1) / 2 - sw / 2, mid_y + 14 * S),
-            sub,
-            fill=(*_LABEL, 255),
-            font=fonts["footer"],
-        )
-
-    # Clip spark/glow to the rounded panel.
-    mask = Image.new("L", (W, H), 0)
-    ImageDraw.Draw(mask).rounded_rectangle(
-        [sx0 + S, sy0 + S, sx1 - S, sy1 - S],
-        radius=13 * S,
-        fill=255,
-    )
-    r_ch, g_ch, b_ch, a_ch = overlay.split()
-    from PIL import ImageChops
-
-    overlay = Image.merge("RGBA", (r_ch, g_ch, b_ch, ImageChops.multiply(a_ch, mask)))
-    img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
-    draw = ImageDraw.Draw(img)
-
-    if chips:
-        cx = sx0 + 14 * S
-        cy = sy0 + 12 * S
-        for lab, val, col, direction in chips[:4]:
-            arrow = {"up": " \u2191", "down": " \u2193"}.get(direction, "")
-            txt = f"{lab}  {val}{arrow}"
-            tw, th = _wh(draw, txt, fonts["chip"])
-            box = [cx, cy, cx + tw + 18 * S, cy + th + 10 * S]
-            _rounded(draw, box, radius=7 * S, fill=(14, 16, 20), outline=col, width=S)
-            draw.text((cx + 9 * S, cy + 4 * S), txt, fill=col, font=fonts["chip"])
-            cx = box[2] + 8 * S
-            if cx > sx1 - 36 * S:
-                break
+        draw.text(((sx0+sx1)/2, (sy0+sy1)/2-10*S), 'Waiting for recent price observations',
+                  fill=_TEXT, font=fonts['empty'], anchor='mm')
+        draw.text(((sx0+sx1)/2, (sy0+sy1)/2+18*S), 'Candles appear as the live feed arrives',
+                  fill=_MUTED, font=fonts['footer'], anchor='mm')
 
     # --- Stats grid --------------------------------------------------------
     stats_top = 506 * S
@@ -631,7 +523,7 @@ def render_ticket(
 
     stats: list[tuple[str, str]] = [
         ("MARK", _fmt_price(mark)),
-        ("OPEN", _fmt_price(open_price)),
+        ("ENTRY", _fmt_price(open_price)),
         ("LIQ", _fmt_price(liquidation)),
         ("TP", _fmt_price(tp) if tp and tp > 0 else "\u2014"),
         ("SL", _fmt_price(sl) if sl and sl > 0 else "\u2014"),
@@ -658,6 +550,10 @@ def render_ticket(
             )
         if rr == 1 and c == 0:
             _hline(draw, mx, right, cy0 - 6 * S, _HAIR, width=S)
+        if candles and lab in ('ENTRY', 'LIQ', 'TP', 'SL'):
+            level = {'ENTRY': open_price, 'LIQ': liquidation, 'TP': tp, 'SL': sl}[lab]
+            if level and (level < lo or level > hi):
+                lab += ' ↑' if level > hi else ' ↓'
         _draw_tracked(
             draw,
             (cx0 + 16 * S, cy0 + 4 * S),

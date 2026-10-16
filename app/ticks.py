@@ -8,6 +8,7 @@ of *Veranta* marks — never Binance spot.
 from __future__ import annotations
 
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -33,7 +34,7 @@ _writes_since_prune = 0
 
 def configure(path: Path | None = None) -> None:
     """Point the tape at a different sqlite file (tests / sidecar)."""
-    global _conn, _db_path
+    global _conn, _db_path, _writes_since_prune
     with _lock:
         if _conn is not None:
             try:
@@ -41,6 +42,8 @@ def configure(path: Path | None = None) -> None:
             except Exception:  # noqa: BLE001
                 pass
             _conn = None
+        _last_write.clear()
+        _writes_since_prune = 0
         if path is not None:
             _db_path = Path(path)
 
@@ -86,20 +89,22 @@ def record_tick(
         px = float(price)
     except (TypeError, ValueError):
         return False
-    if px <= 0:
+    if not math.isfinite(px) or px <= 0:
         return False
-    now = float(ts) if ts is not None else time.time()
-    if now <= 0:
-        now = time.time()
+    try:
+        now = float(ts) if ts is not None else time.time()
+    except (TypeError, ValueError):
+        return False
+    if not math.isfinite(now) or now <= 0:
+        return False
 
     with _lock:
         last = _last_write.get(idx)
         if last is not None:
             dt = now - last[0]
-            if dt < MIN_INTERVAL_S:
-                # Keep the latest price in the window without flooding sqlite.
-                return False
-            if last[1] > 0 and abs(px - last[1]) / last[1] < 1e-9 and dt < 8.0:
+            # Preserve every changed observation, including subsecond wicks.
+            # Only coalesce identical in-order prices; retain a 2s heartbeat.
+            if 0 <= dt < MIN_INTERVAL_S and px == last[1]:
                 return False
         try:
             conn = _get_conn()
@@ -110,7 +115,8 @@ def record_tick(
         except Exception:  # noqa: BLE001
             logger.debug("lazer tick insert failed pair=%s", idx, exc_info=True)
             return False
-        _last_write[idx] = (now, px)
+        if last is None or now >= last[0]:
+            _last_write[idx] = (now, px)
         _writes_since_prune += 1
         if _writes_since_prune >= _PRUNE_EVERY_WRITES:
             _writes_since_prune = 0
@@ -146,6 +152,8 @@ def load_ticks(
             return []
     if not rows:
         return []
+    if limit == 1:
+        return [(float(rows[-1][0]), float(rows[-1][1]))]
     if limit and len(rows) > int(limit):
         # Even stride, keep first + last.
         n = int(limit)

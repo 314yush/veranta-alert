@@ -68,3 +68,9 @@ python -c 'import app.bot'
 ```
 
 GitHub Actions runs offline tests, frontend build and Docker build. The live SDK smoke (`scripts/smoke_sdk_positions.py <wallet>`) uses public reads; no signing credentials are required. Launch acceptance: fresh user starts, subscribes, sees correct live positions, receives a controlled warning, survives worker restart and temporary delivery failure, then mutes/unmutes and stops successfully. Do not open a risky trade solely to test alerts.
+
+## Chart rendering
+
+Position cards use the same 1080×720 renderer as alert cards, with tightly spaced 5-minute candles and a two-hour window. The price scale uses observed highs/lows plus 6% padding; distant risk levels stay in the stats grid. Changed subsecond observations are retained before OHLC aggregation, gaps stay empty, and isolated observations appear as dots. Recent Veranta observations are preferred; official five-minute candles and explicitly labeled spot references are fallbacks.
+
+`python scripts/preview_trade_durations.py` generates simulated 2m/5m/10m/10h examples using 5s/15s/30s/30m candles. These are renderer previews, not an automatic runtime timeframe selector. Local tick retention remains two hours.

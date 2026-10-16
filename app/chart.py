@@ -25,6 +25,8 @@ from .formatting import display_pair
 from .ohlc import fetch_candles, is_exotic_pair
 from .prefs import pnl_pct_at_price
 from .ticket import render_ticket
+from .ticks import load_ticks
+from .candles import prepare_tape
 
 logger = logging.getLogger(__name__)
 
@@ -490,7 +492,11 @@ def render_levels_chart(
         pnl_usdc=pnl_usdc,
     )
 
-    candles = None if (not RENDER_JS.is_file() or is_exotic_pair(pair_label)) else fetch_candles(pair_label)
+    if ticks is None and pair_index is not None:
+        ticks = load_ticks(pair_index, hours=2, limit=0)
+    ticks = prepare_tape(ticks or [])
+    has_recent_tape = bool(ticks and time.time()-ticks[-1][0]<=15)
+    candles = None if (has_recent_tape or not RENDER_JS.is_file() or is_exotic_pair(pair_label)) else fetch_candles(pair_label)
     if candles:
         png = render_lw_chart(candles=candles, lines=lines, title=title)
         if png:
