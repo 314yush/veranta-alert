@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import asyncio
 from dataclasses import dataclass
 from io import BytesIO
 
@@ -12,7 +11,6 @@ from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
 from .veranta_sdk import VerantaSDK, Position, is_valid_address, normalize_address
-from .chart import chart_from_position
 from .config import LIQ_PNL_PERCENT
 from .db import Database
 from .formatting import (
@@ -72,6 +70,8 @@ class PositionsLoad:
     html: str
     positions: list[Position]
     muted: bool
+    page: int = 0
+    available: bool = True
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -87,7 +87,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _load_positions(
-    context: ContextTypes.DEFAULT_TYPE, chat_id: int
+    context: ContextTypes.DEFAULT_TYPE, chat_id: int, page: int = 0
 ) -> PositionsLoad:
     sub = await _db(context).get_subscription(chat_id)
     if not sub:
@@ -96,6 +96,7 @@ async def _load_positions(
             "(<code>0x…</code>).",
             [],
             False,
+            available=False,
         )
     try:
         positions = await _client(context).fetch_positions(sub.wallet)
@@ -108,61 +109,13 @@ async def _load_positions(
             "",
             [],
             False,
+            available=False,
         )
-    text = format_positions(positions, sub.wallet)
+    page = min(max(0, page), max(0, (len(positions)-1)//8))
+    text = format_positions(positions, sub.wallet, page)
     if sub.muted and not positions:
         text += "\n\n<i>Alerts muted — /unmute to resume</i>"
-    return PositionsLoad(text, positions, bool(sub.muted))
-
-
-async def _send_position_photos(
-    context: ContextTypes.DEFAULT_TYPE,
-    chat_id: int,
-    positions: list[Position],
-    *,
-    muted: bool,
-) -> None:
-    ordered = sorted(positions, key=lambda x: (x.pair_index, x.index))
-    rendered: list[tuple[str, bytes | None]] = []
-    for i, pos in enumerate(ordered):
-        caption = format_position_card(pos)
-        if muted and i == len(ordered) - 1:
-            caption += "\n\n<i>Alerts muted — /unmute to resume</i>"
-        caption = fit_caption(caption)
-        png: bytes | None = None
-        try:
-            png = await asyncio.to_thread(chart_from_position, pos)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "positions chart failed pair=%s idx=%s",
-                pos.symbol,
-                pos.index,
-            )
-        rendered.append((caption, png))
-
-    # Never album: one send_photo per position so LONG/SHORT are each their own card.
-    kb = positions_keyboard()
-    for i, (cap, png) in enumerate(rendered):
-        markup = kb if i == 0 else None
-        try:
-            if png:
-                await context.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=_png_buf(png, f"pos_{i}.png"),
-                    filename=f"pos_{i}.png",
-                    caption=cap,
-                    **html_photo_kwargs(reply_markup=markup),
-                )
-            else:
-                await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=cap,
-                    reply_markup=markup,
-                    **_HTML,
-                )
-        except Exception:  # noqa: BLE001
-            logger.exception("sequential position send failed i=%s", i)
-            await context.bot.send_message(chat_id=chat_id, text=cap, **_HTML)
+    return PositionsLoad(text, positions, bool(sub.muted), page)
 
 
 async def _deliver_positions(
@@ -172,30 +125,15 @@ async def _deliver_positions(
     *,
     status_message=None,  # noqa: ANN001
 ) -> None:
-    if not load.positions:
-        if status_message is not None:
-            try:
-                await status_message.edit_text(load.html, **_HTML)
+    kwargs = html_send_kwargs(reply_markup=positions_keyboard(load.positions, load.page))
+    if status_message is not None:
+        try:
+            await status_message.edit_text(load.html, **kwargs)
+            return
+        except BadRequest as exc:
+            if "not modified" in str(exc).lower():
                 return
-            except BadRequest:
-                pass
-        await context.bot.send_message(chat_id=chat_id, text=load.html, **_HTML)
-        await _safe_delete(status_message)
-        return
-
-    try:
-        await _send_position_photos(
-            context, chat_id, load.positions, muted=load.muted
-        )
-    except Exception:  # noqa: BLE001
-        logger.exception("position photo delivery failed; text fallback")
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=load.html,
-            reply_markup=positions_keyboard(),
-            **_HTML,
-        )
-    await _safe_delete(status_message)
+    await context.bot.send_message(chat_id=chat_id, text=load.html, **kwargs)
 
 
 async def positions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -378,7 +316,8 @@ async def test_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
     photo = None
     try:
-        photo = await asyncio.to_thread(chart_from_position, pos, pnl_usdc=pos.unrealized_pnl_usdc)
+        from .position_chart import build_chart
+        photo = await build_chart(_client(context), pos)
     except Exception:  # noqa: BLE001
         logger.exception("test chart render failed")
 
@@ -479,10 +418,35 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     data = (query.data or "").strip()
     chat_id = update.effective_chat.id
 
-    if data == "positions":
+    if data == "positions" or data.startswith("positions:"):
         await query.answer("Fetching positions…")
+        page = int(data.split(":")[1]) if ":" in data else 0
+        load = await _load_positions(context, chat_id, page)
+        message = query.message if query.message and query.message.text else None
+        await _deliver_positions(context, chat_id, load, status_message=message)
+        return
+
+    if data.startswith("chart:"):
+        await query.answer("Loading chart…")
         load = await _load_positions(context, chat_id)
-        await _deliver_positions(context, chat_id, load)
+        if not load.available:
+            await _deliver_positions(context, chat_id, load)
+            return
+        wanted = data.removeprefix("chart:")
+        pos = next((p for p in load.positions if p.chart_key == wanted), None)
+        if pos is None:
+            load.html = "That position is no longer open.\n\n" + load.html
+            await _deliver_positions(context, chat_id, load)
+            return
+        from .position_chart import build_chart
+        try:
+            photo = await build_chart(_client(context), pos)
+        except Exception:
+            logger.exception("position chart unavailable")
+            await context.bot.send_message(chat_id=chat_id, text=format_position_card(pos) + "\nChart temporarily unavailable.", **_HTML)
+            return
+        await context.bot.send_photo(chat_id=chat_id, photo=_png_buf(photo, "position.png"),
+            caption=format_position_card(pos), **html_photo_kwargs(reply_markup=positions_keyboard()))
         return
 
     if data == "mute":
@@ -573,7 +537,7 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             f"Watching <code>{short}</code> · "
             f"<b>{count} open position{'s' if count != 1 else ''}</b>\n"
             f"{summary}\n\n"
-            f"Liq alerts at net PnL {levels_s} (liq ≈ -85%). "
+            "Liq alerts use distance to the actual liquidation price. "
             f"TP/SL proximity ≤ {prefs.tp_distance_pnl:g}/{prefs.sl_distance_pnl:g} "
             f"PnL pts. Hot poll ~15s.\n"
             f"/positions · /test · /settings · /mute · /stop",

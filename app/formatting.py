@@ -179,16 +179,25 @@ def alert_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def positions_keyboard() -> InlineKeyboardMarkup:
-    """Inline actions on /positions photo replies (no Mute)."""
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton("Settings", callback_data="settings"),
-                InlineKeyboardButton("Open Veranta", url=VERANTA_URL),
-            ],
-        ]
-    )
+def positions_keyboard(positions=None, page=0):
+    positions = positions or []
+    rows = []
+    for pos in positions[page*8:(page+1)*8]:
+        rows.append([InlineKeyboardButton(
+            f"{display_pair(pos.symbol)} {pos.side} · Chart",
+            callback_data=f"chart:{pos.chart_key}",
+        )])
+    nav = []
+    if page:
+        nav.append(InlineKeyboardButton("Previous", callback_data=f"positions:{page-1}"))
+    if len(positions) > (page+1)*8:
+        nav.append(InlineKeyboardButton("Next", callback_data=f"positions:{page+1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("Refresh", callback_data="positions"),
+                 InlineKeyboardButton("Settings", callback_data="settings"),
+                 InlineKeyboardButton("Open Veranta", url=VERANTA_URL)])
+    return InlineKeyboardMarkup(rows)
 
 
 def _on_off(enabled: bool) -> str:
@@ -209,7 +218,7 @@ def _preset_name_for_levels(levels: tuple[float, ...]) -> str | None:
 
 
 def format_settings(prefs: AlertPrefs, *, muted: bool = False) -> str:
-    levels_s = format_liq_levels(prefs.liq_levels)
+    levels_s = "/".join(f"{lv-LIQ_PNL_PERCENT:g}" for lv in prefs.liq_levels)
     preset = _preset_name_for_levels(prefs.liq_levels)
     preset_s = f" ({_h(preset)})" if preset else ""
     mute_note = (
@@ -218,13 +227,13 @@ def format_settings(prefs: AlertPrefs, *, muted: bool = False) -> str:
     return (
         "⚙️ <b>Alert settings</b>\n"
         f"• Liquidation: <b>{_on_off(prefs.liq_enabled)}</b> · "
-        f"levels <code>{_h(levels_s)}</code>{preset_s}\n"
+        f"buffer <code>{_h(levels_s)}</code> pts{preset_s}\n"
         f"• Take-profit proximity: <b>{_on_off(prefs.tp_enabled)}</b> · "
         f"within <code>{prefs.tp_distance_pnl:g}</code> PnL pts\n"
         f"• Stop-loss proximity: <b>{_on_off(prefs.sl_enabled)}</b> · "
         f"within <code>{prefs.sl_distance_pnl:g}</code> PnL pts\n\n"
-        "Distances are <b>PnL% of collateral</b> (leverage-normalized), "
-        f"not raw price%. Liq ≈ <code>{LIQ_PNL_PERCENT:g}%</code> PnL.\n\n"
+        "Distances are <b>Collateral-risk points</b> (leverage-normalized), "
+        "from the actual trigger price, not raw price%.\n\n"
         "Tap buttons below, or:\n"
         "<code>/settings tp 15</code> · <code>/settings sl 5</code> · "
         "<code>/settings liq safe|default|tight</code>"
@@ -313,36 +322,19 @@ def format_position_card(pos: Position) -> str:
     )
 
 
-def format_positions(positions: list[Position], wallet: str) -> str:
-    """HTML text for empty-state / fallback. No marketing URL."""
-    short = short_wallet(wallet)
+def format_positions(positions: list[Position], wallet: str, page=0) -> str:
     if not positions:
-        return f"No open Veranta positions for <code>{_h(short)}</code>."
-
-    header = f"<b>{_h(short)}</b> · {len(positions)} open"
-    cards: list[str] = []
-    shown = 0
-    for p in sorted(positions, key=lambda x: (x.pair_index, x.index)):
-        if shown >= _MAX_POSITIONS_SHOWN:
-            break
-        cards.append(format_position_card(p))
-        shown += 1
-
-    body = f"{header}\n\n" + "\n\n".join(cards)
-    omitted = len(positions) - shown
-    if omitted > 0:
-        body += f"\n\n…and {omitted} more"
-
-    if len(body) > _TELEGRAM_MSG_LIMIT:
-        while cards and len(body) > _TELEGRAM_MSG_LIMIT:
-            cards.pop()
-            omitted = len(positions) - len(cards)
-            body = (
-                f"{header}\n\n"
-                + "\n\n".join(cards)
-                + f"\n\n…and {omitted} more"
-            )
-    return body
+        return "<b>No open positions.</b>\nI’m still watching this wallet. I’ll check for new trades automatically."
+    known = [p.unrealized_pnl_usdc for p in positions if p.unrealized_pnl_usdc is not None]
+    total = _signed_money(sum(known)) if len(known) == len(positions) else "unavailable (missing data)"
+    lines = [f"<b>{len(positions)} open · Net PnL {total}</b>"]
+    for pos in positions[page*8:(page+1)*8]:
+        distance = pos.distance_to_liq_pct()
+        risk = f"Liq {max(0,distance):.2f}% away" if distance is not None else "Liq distance unavailable"
+        stops = f"TP {_price(pos.tp) if pos.tp else 'not set'} · SL {_price(pos.sl) if pos.sl else 'not set'}"
+        lines.append(f"<b>{_h(display_pair(pos.symbol))} {pos.side}</b> · {_h(_pnl_combo(pos))}\n{risk} · {stops}")
+    lines.append("Tap a position for its chart and price levels.")
+    return "\n\n".join(lines)
 
 
 def format_top_position_summary(pos: Position) -> str:
@@ -390,32 +382,13 @@ def format_liq_alert(
     liq_pnl_percent: float = LIQ_PNL_PERCENT,
     preview: bool = False,
 ) -> str:
-    buffer = pnl_pct - liq_pnl_percent
-    severity = {
-        -40.0: "warn",
-        -60.0: "high",
-        -75.0: "critical",
-        -30.0: "warn",
-        -50.0: "high",
-        -70.0: "critical",
-        -82.0: "critical",
-    }.get(float(level), "near")
-    emoji = {"warn": "⚠️", "high": "🟠", "critical": "🔴"}.get(severity, "⚠️")
-    pnl_usdc_s = _signed_money(pos.unrealized_pnl_usdc)
-    prefix = (
-        "🧪 Preview /test — not a real alert (state unchanged)\n\n" if preview else ""
-    )
-    name = display_pair(pos.symbol)
+    buffer = pos.buffer_to_liq_pts()
+    distance = f"{buffer:.1f} collateral pts" if buffer is not None else "unavailable"
+    prefix = "Preview — not a real alert\n" if preview else ""
     return (
-        f"{prefix}"
-        f"{emoji} <b>{_h(name)} {_h(pos.side)}</b> near liquidation\n"
-        f"PnL ~{_h(pnl_usdc_s)} (~{_h(_pnl_pct_label(pnl_pct))}) · "
-        f"Liq at {_h(_pnl_pct_label(liq_pnl_percent))} · "
-        f"Buffer ~{buffer:.0f} pts\n"
-        f"Alert level: {_h(_pnl_pct_label(level))}\n"
-        f"Mark ~{_h(_money(pos.mark_price))} | Open ~{_h(_money(pos.open_price))} | "
-        f"Liq ~{_h(_money(pos.liquidation_price))}\n"
-        f"Size: {_h(_money(pos.collateral_usdc))} collateral @ {pos.leverage:.0f}x"
+        f"{prefix}⚠️ <b>{_h(display_pair(pos.symbol))} {pos.side}</b> · liquidation risk\n"
+        f"Liq {_price(pos.liquidation_price)} · Mark {_price(pos.mark_price)}\n"
+        f"Buffer {distance} · Net PnL {_h(_pnl_combo(pos))}"
     )
 
 
@@ -441,40 +414,14 @@ def format_proximity_alert(
         target_name = "SL"
     name = display_pair(pos.symbol)
     return (
-        f"{emoji} <b>{_h(name)} {_h(pos.side)}</b> — {label}\n"
-        f"PnL now ~{_h(_pnl_pct_label(current_pnl_pct))} · "
-        f"{target_name} level ~{_h(_pnl_pct_label(target_pnl_pct))} · "
-        f"{remaining_pts:.1f} PnL pts away "
-        f"(alert ≤ {distance_cfg:g})\n"
-        f"Mark ~{_h(_money(pos.mark_price))} | "
-        f"{target_name} ~{_h(_money(target_price))} | "
-        f"Open ~{_h(_money(pos.open_price))}\n"
-        f"Size: {_h(_money(pos.collateral_usdc))} @ {pos.leverage:.0f}x"
+        f"{emoji} <b>{_h(name)} {pos.side}</b> · near {target_name}\n"
+        f"{target_name} {_price(target_price)} · Mark {_price(pos.mark_price)}\n"
+        f"{remaining_pts:.1f} collateral pts away · Net PnL {_h(_pnl_combo(pos))}"
     )
 
 
 def format_exit_alert(kind: str, pos: Position, mark: float | None) -> str:
-    emoji = {
-        "tp": "✅",
-        "sl": "🛑",
-        "liq": "💀",
-        "closed": "ℹ️",
-    }.get(kind, "ℹ️")
-    label = {
-        "tp": "Take-profit hit (best-effort)",
-        "sl": "Stop-loss hit (best-effort)",
-        "liq": "Liquidation (best-effort)",
-        "closed": "Position no longer open — execution reason unconfirmed",
-    }.get(kind, "Position update")
-    name = display_pair(pos.symbol)
-    return (
-        f"{emoji} <b>{_h(name)} {_h(pos.side)}</b> — {label}\n"
-        f"Last mark ~{_h(_money(mark))} | Entry {_h(_money(pos.open_price))} | "
-        f"Liq {_h(_money(pos.liquidation_price))}\n"
-        f"TP {_h(_money(pos.tp) if pos.tp else '—')} | "
-        f"SL {_h(_money(pos.sl) if pos.sl else '—')}\n"
-        f"Collateral was {_h(_money(pos.collateral_usdc))} @ {pos.leverage:.0f}x"
-    )
+    return f"<b>{_h(display_pair(pos.symbol))} {pos.side} closed.</b>\nFinal PnL and close reason are not confirmed yet."
 
 
 HELP_TEXT = """\
@@ -492,12 +439,12 @@ HELP_TEXT = """\
 
 Or send a Base wallet (<code>0x</code> + 40 hex) to start watching.
 
-<b>Alerts</b> (PnL% of collateral — leverage-normalized, not raw price%):
-• Liquidation proximity at your levels (default -40 / -60 / -75 toward liq ≈ -85%)
+<b>Alerts</b> (Collateral-risk points — leverage-normalized, not raw price%):
+• Liquidation warnings within 45 / 25 / 10 collateral points of the API liquidation price
 • TP proximity when within N PnL pts of take-profit (default 10)
 • SL proximity when within N PnL pts of stop-loss (default 10)
-• Best-effort TP / SL / liq when a position disappears (respects toggles)
-• Near-liq (+ optional TP/SL) charts: open / mark / liq / TP / SL
+• Closed-position notices; final PnL and reason require confirmed history
+• /positions: one summary; tap a position for entry / mark / liq / TP / SL chart
 • Buttons: Positions · Mute · Settings · Open Veranta
 
 <code>/mute</code> pauses everything; <code>/settings</code> toggles are finer-grained.
@@ -515,9 +462,9 @@ Send your Base wallet address to subscribe, e.g.
 <code>0x1234...abcd</code>
 
 I'll confirm open-position count, poll hot ~15s / idle ~3 min, and ping on:
-• Liq proximity (default -40 / -60 / -75 toward -85% PnL)
+• Liq proximity (default 45 / 25 / 10 collateral points away)
 • TP / SL proximity (default within 10 PnL pts)
-• Best-effort TP / SL / liq on close
+• Concise closed-position notices
 
 Configure with /settings · preview with /test · /positions · /help
 """

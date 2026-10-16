@@ -106,7 +106,7 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
         self.assertIn('tp_prox',[a.kind for a in alerts])
     async def test_rate_limit_pauses_other_queued_messages(self):
         from telegram.error import RetryAfter
-        await self.engine.evaluate(1,[position(unrealized_pnl_pct=-65)],False)
+        await self.engine.evaluate(1,[position(mark_price=93.5,unrealized_pnl_pct=-65)],False)
         bot=SimpleNamespace(send_message=AsyncMock(side_effect=RetryAfter(60)))
         monitor=Monitor(None,self.db,None,self.engine)
         await monitor.deliver_pending(SimpleNamespace(bot=bot))
@@ -149,3 +149,11 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
             settings=load_settings()
             self.assertIsNone(settings.veranta_private_key)
             self.assertIsNone(settings.veranta_trader_address)
+    async def test_liquidation_alert_uses_price_even_when_net_is_unavailable(self):
+        p=position(mark_price=91.6,liquidation_price=91.5,unrealized_pnl_pct=None)
+        alerts=await self.engine.evaluate(1,[p],False)
+        self.assertIn('pnl_-75',[a.kind for a in alerts])
+    async def test_liquidation_risk_not_hidden_by_net_pnl_adjustments(self):
+        p=position(mark_price=91.6,liquidation_price=91.5,unrealized_pnl_pct=-20)
+        alerts=await self.engine.evaluate(1,[p],False)
+        self.assertIn('pnl_-75',[a.kind for a in alerts])

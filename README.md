@@ -20,9 +20,9 @@ Open wallets poll every 15 seconds; idle wallets every 180 seconds. A newly open
 
 SQLite stores subscriptions, preferences, position snapshots and a durable outbox. Alert decisions and enqueueing commit together. A separate worker retries failed Telegram sends across restarts. `/mute`, `/stop`, and wallet changes cancel pending messages. Blocked bots pause that chat. Telegram rate limits delay delivery; permanently invalid payloads stay queued with hourly retries for operator investigation.
 
-Delivery is **at least once**: a crash after Telegram accepts a message but before local acknowledgement can cause a duplicate. Urgent warnings are text-only with action buttons. `/positions` and `/test` provide images off the event loop. Closed positions are explicitly unconfirmed; the bot does not infer TP/SL/liquidation fills from prices. Missing fresh prices suppress risk calculations rather than inventing a price.
+Delivery is **at least once**: a crash after Telegram accepts a message but before local acknowledgement can cause a duplicate. Urgent warnings are text-only with action buttons. `/positions` provides one compact summary, with pagination above eight positions. Tap a position’s Chart button for an image; `/test` also provides a preview off the event loop. Closed positions are explicitly unconfirmed; the bot does not infer TP/SL/liquidation fills from prices. Missing fresh prices suppress risk calculations rather than inventing a price.
 
-Default liquidation warnings: net PnL -40/-60/-75% of collateral. TP/SL proximity uses PnL points on a consistent fee basis. Risk computations fall back to gross PnL if SDK net computation is unavailable; verify parity with the exchange before opening access widely.
+Default liquidation warnings: 45/25/10 collateral points remaining to the actual liquidation price. TP/SL proximity uses leveraged price distance. Net PnL uses SDK fees and funding; missing net computations are explicitly unavailable. See [calculation audit](docs/PNL.md).
 
 ## Railway deployment
 
@@ -32,7 +32,7 @@ Default liquidation warnings: net PnL -40/-60/-75% of collateral. TP/SL proximit
 4. Deploy. `/health` reports scheduler liveness, successful reads, delivery progress and queue depth/age; sustained upstream or price failures and delivery backlog return HTTP 503. Monitor this endpoint and logs.
 5. Stop the previous bot process before running the same Telegram token here. Retain existing subscribers by migrating their database with the worker stopped.
 
-The Docker deployment deliberately uses Pillow cards and bundled fonts; Node/Chromium candle charts are optional local functionality. This keeps alert delivery independent of browsers or external candle providers.
+The Docker deployment uses native Pillow candle charts and bundled fonts without Node/Chromium. Charts show entry, TP, SL and liquidation, with labelled reference-candle and observed-tick fallbacks. Alert delivery remains independent of chart providers.
 
 ### Backup and restore
 

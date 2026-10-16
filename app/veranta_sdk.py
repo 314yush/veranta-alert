@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import math
+import hashlib
 import os
 import re
 import time
@@ -39,7 +41,8 @@ def _f(value: Any, default: float = 0.0) -> float:
     if value is None:
         return default
     try:
-        return float(value)
+        result = float(value)
+        return result if math.isfinite(result) else default
     except (TypeError, ValueError):
         return default
 
@@ -77,10 +80,15 @@ class Position:
     unrealized_pnl_pct: float | None = None
     # Gross PnL kept for debug / smoke comparison.
     gross_pnl_usdc: float | None = None
+    chart_symbol: str | None = None
 
     @property
     def position_key(self) -> str:
         return f"{self.trader.lower()}:{self.pair_index}:{self.index}:{self.opened_at or self.open_price}"
+
+    @property
+    def chart_key(self) -> str:
+        return hashlib.sha256(self.position_key.encode()).hexdigest()[:24]
 
     @property
     def side(self) -> str:
@@ -94,12 +102,11 @@ class Position:
         self, mark: float | None = None, *, liq_pnl_percent: float = -85.0
     ) -> float | None:
         """Percentage-points of collateral PnL remaining before liq threshold."""
-        # `mark` kept for API compat; alerts use fetch-time net PnL%.
-        del mark
-        pnl_pct = self.unrealized_pnl_pct
-        if pnl_pct is None:
+        m = self.mark_price if mark is None else mark
+        if m is None or any(not math.isfinite(v) or v <= 0 for v in (m, self.liquidation_price, self.open_price, self.leverage)):
             return None
-        return pnl_pct - liq_pnl_percent
+        direction = 1 if self.is_long else -1
+        return (m - self.liquidation_price) * direction / self.open_price * self.leverage * 100
 
     def distance_to_liq_pct(self, mark: float | None = None) -> float | None:
         """Legacy mark-vs-liq price distance % (kept for debugging; alerts use PnL%).
@@ -109,7 +116,7 @@ class Position:
         """
         m = self.mark_price if mark is None else mark
         liq = self.liquidation_price
-        if m is None or m <= 0 or liq <= 0:
+        if m is None or any(not math.isfinite(v) or v <= 0 for v in (m, liq)):
             return None
         if self.is_long:
             return (m - liq) / m * 100.0
@@ -124,7 +131,7 @@ def _compute_gross(
     leverage: float,
     is_long: bool,
 ) -> float | None:
-    if mark <= 0 or open_price <= 0 or collateral <= 0 or leverage <= 0:
+    if any(not math.isfinite(v) or v <= 0 for v in (mark, open_price, collateral, leverage)):
         return None
     return gross_pnl(
         current_price=mark,
@@ -140,7 +147,7 @@ def _pnl_for_sdk_position(
     pair_info: PairInfo | None,
     mark: float | None,
 ) -> tuple[float | None, float | None]:
-    """Return (net_usdc, gross_usdc). Net falls back to gross on failure."""
+    """Return (net_usdc, gross_usdc). Net is unavailable if fee data or computation fails; never label gross as net."""
     if mark is None or mark <= 0:
         return None, None
     collateral = _f(sdk_pos.collateral)
@@ -157,18 +164,19 @@ def _pnl_for_sdk_position(
     if g is None:
         return None, None
     if pair_info is None:
-        return g, g
+        return None, g
     try:
         breakdown = position_net_pnl(sdk_pos, pair_info, mark)
-        return float(breakdown.net), float(breakdown.gross)
+        net = float(breakdown.net)
+        return (net if math.isfinite(net) else None), g
     except Exception:  # noqa: BLE001
         logger.warning(
-            "position_net_pnl failed pair=%s idx=%s; falling back to gross",
+            "position_net_pnl failed pair=%s idx=%s; net PnL unavailable",
             getattr(sdk_pos, "pair_index", "?"),
             getattr(sdk_pos, "index", "?"),
             exc_info=True,
         )
-        return g, g
+        return None, g
 
 
 class VerantaSDK:
@@ -262,9 +270,9 @@ class VerantaSDK:
         )
         return info
 
-    def _lazer_feed_map(self, pair_indexes: set[int]) -> dict[int, int]:
-        """lazer feed_id -> pair_index for the given pairs."""
-        feed_to_pair: dict[int, int] = {}
+    def _lazer_feed_map(self, pair_indexes: set[int]) -> dict[int, list[int]]:
+        """lazer feed_id -> pair indexes for the given pairs."""
+        feed_to_pair: dict[int, list[int]] = {}
         for idx in pair_indexes:
             info = self._pair_info.get(idx)
             lazer = getattr(info, "lazer_feed", None) if info else None
@@ -272,7 +280,7 @@ class VerantaSDK:
             if fid is None:
                 continue
             try:
-                feed_to_pair[int(fid)] = idx
+                feed_to_pair.setdefault(int(fid), []).append(idx)
             except (TypeError, ValueError):
                 continue
         return feed_to_pair
@@ -359,15 +367,15 @@ class VerantaSDK:
         await self._stop_lazer_stream()
         stream = self._client.lazer_price_stream(list(feed_to_pair.keys()))
         self._lazer_stream = stream
-        self._lazer_subscribed_pairs = frozenset(feed_to_pair.values())
+        self._lazer_subscribed_pairs = frozenset(i for indexes in feed_to_pair.values() for i in indexes)
 
         async def on_price(update: Any) -> None:
             try:
                 fid = int(update.feed_id)
             except (TypeError, ValueError):
                 return
-            pair_idx = feed_to_pair.get(fid)
-            if pair_idx is None:
+            pair_indexes_for_feed = feed_to_pair.get(fid, [])
+            if not pair_indexes_for_feed:
                 return
             price = _f(getattr(update, "price", None))
             if price <= 0:
@@ -382,7 +390,8 @@ class VerantaSDK:
                 age = 0.0
             if age > self._mark_max_age_s:
                 return
-            self._store_lazer_mark(pair_idx, price, age)
+            for pair_idx in pair_indexes_for_feed:
+                self._store_lazer_mark(pair_idx, price, age)
 
         async def runner() -> None:
             try:
@@ -518,8 +527,8 @@ class VerantaSDK:
                 fid = int(update.feed_id)
             except (TypeError, ValueError):
                 return
-            pair_idx = feed_to_pair.get(fid)
-            if pair_idx is None or pair_idx in got:
+            pair_indexes_for_feed = feed_to_pair.get(fid, [])
+            if not pair_indexes_for_feed or all(i in got for i in pair_indexes_for_feed):
                 return
             price = _f(getattr(update, "price", None))
             if price <= 0:
@@ -535,13 +544,14 @@ class VerantaSDK:
             if age > self._mark_max_age_s:
                 logger.warning(
                     "rejecting stale Lazer mark pair_index=%s age_s=%.1f",
-                    pair_idx,
+                    pair_indexes_for_feed,
                     age,
                 )
                 return
-            got[pair_idx] = (price, age)
-            self._store_lazer_mark(pair_idx, price, age)
-            if len(got) >= len(feed_to_pair):
+            for pair_idx in pair_indexes_for_feed:
+                got[pair_idx] = (price, age)
+                self._store_lazer_mark(pair_idx, price, age)
+            if len(got) >= sum(len(v) for v in feed_to_pair.values()):
                 stream.stop()
 
         try:
@@ -701,6 +711,18 @@ class VerantaSDK:
             )
         return out
 
+    def chart_reference_symbol(self, pair_index):
+        info = self._pair_info.get(pair_index)
+        feed_id = getattr(getattr(info, "lazer_feed", None), "feed_id", None)
+        if feed_id is None:
+            return None
+        for idx, other in self._pair_info.items():
+            if getattr(getattr(other, "lazer_feed", None), "feed_id", None) == feed_id:
+                symbol = self._pair_symbols.get(idx, "")
+                if "UPSIDE" not in symbol and "DOWNSIDE" not in symbol:
+                    return symbol
+        return None
+
     async def fetch_positions(self, trader: str) -> list[Position]:
         """Read open positions for any Base address via SDK account.positions(trader=)."""
         trader = normalize_address(trader)
@@ -752,6 +774,7 @@ class VerantaSDK:
                     unrealized_pnl_usdc=net_usdc,
                     unrealized_pnl_pct=net_pct,
                     gross_pnl_usdc=gross_usdc,
+                    chart_symbol=self.chart_reference_symbol(pair_index),
                 )
             )
         return out

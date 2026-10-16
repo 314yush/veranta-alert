@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import logging
 import time
 from dataclasses import dataclass
@@ -248,14 +249,15 @@ class AlertEngine:
             if muted:
                 continue
             pnl_pct = pos.unrealized_pnl_pct
-            if pnl_pct is None:
-                continue
-
-            if prefs.liq_enabled:
+            buffer = pos.buffer_to_liq_pts()
+            # Legacy threshold presets correspond to 45/25/10 collateral points
+            # from the authoritative liquidation price, not a fixed net loss.
+            risk_pct = self.liq_pnl_percent + buffer if buffer is not None else None
+            if prefs.liq_enabled and risk_pct is not None:
                 for level in prefs.liq_levels:
                     level_name = _level_key(level)
                     fired = await self._maybe_fire_liq_proximity(
-                        chat_id, pos, level, pnl_pct, level_name
+                        chat_id, pos, level, risk_pct, level_name
                     )
                     if fired:
                         alerts.append(
@@ -272,6 +274,11 @@ class AlertEngine:
                             )
                         )
 
+            if pnl_pct is None:
+                pnl_pct = pnl_pct_at_price(price=pos.mark_price or 0, open_price=pos.open_price,
+                    collateral=pos.collateral_usdc, leverage=pos.leverage, is_long=pos.is_long)
+            if pnl_pct is None or not math.isfinite(pnl_pct):
+                continue
             if prefs.tp_enabled and pos.tp and pos.tp > 0:
                 alert = await self._maybe_fire_tp_proximity(chat_id, pos, pnl_pct, prefs)
                 if alert:

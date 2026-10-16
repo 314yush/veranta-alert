@@ -1,6 +1,6 @@
 """Public OHLC candles for Veranta crypto pairs.
 
-Veranta has no historical candle API. For mapped crypto symbols we pull
+External reference-candle fallback. For mapped crypto symbols we pull
 public exchange klines (Binance data-api → Binance.com → OKX → Coinbase);
 unmapped pairs (XAU, FX, etc.) return None so the chart layer can fall
 back to a Pillow level-card.
