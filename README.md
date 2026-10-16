@@ -4,7 +4,7 @@ Watch-only Telegram alerts for Veranta positions on Base. Users send a public wa
 
 ## Run the bot
 
-Use Python 3.13. Create a virtual environment, install `requirements.txt`, and copy `.env.example` to `.env` **only if it does not already exist**. Configure `TELEGRAM_BOT_TOKEN`, `VERANTA_PRIVATE_KEY` (operator service/delegate key), and `VERANTA_TRADER_ADDRESS`. Legacy `AVANTIS_*` credential names remain accepted. Never commit secrets.
+Use Python 3.13. Create a virtual environment, install `requirements.txt`, and copy `.env.example` to `.env` **only if it does not already exist**. Configure `TELEGRAM_BOT_TOKEN`. Public position and price reads require no signing key. Optional legacy `AVANTIS_*` and `VERANTA_*` operator settings remain accepted. Never commit secrets.
 
 ```sh
 python -m venv .venv
@@ -28,7 +28,7 @@ Default liquidation warnings: net PnL -40/-60/-75% of collateral. TP/SL proximit
 
 1. Create a service from this repository, root directory `/`, using the Dockerfile. Exactly **one replica** (Telegram long polling and SQLite).
 2. Attach a persistent volume at `/data`. Set `SQLITE_PATH=/data/bot.db` and `PORT=8080`.
-3. Provision the three required credentials in Railway Variables. Confirm the Telegram token belongs to the intended bot; change its name/avatar/description through BotFather.
+3. Provision `TELEGRAM_BOT_TOKEN` in Railway Variables. Confirm the Telegram token belongs to the intended bot; change its name/avatar/description through BotFather.
 4. Deploy. `/health` reports scheduler liveness, successful reads, delivery progress and queue depth/age; sustained upstream or price failures and delivery backlog return HTTP 503. Monitor this endpoint and logs.
 5. Stop the previous bot process before running the same Telegram token here. Retain existing subscribers by migrating their database with the worker stopped.
 
@@ -44,7 +44,7 @@ Schedule daily snapshots and copy them off the service volume (or enable the hos
 
 ## Landing page / Vercel
 
-Set Vercel project root to `web/`. Node 22.12+; build `npm run build`; output `dist`. Configure `VITE_TELEGRAM_BOT_URL` to the actual bot URL. Until the renamed username is supplied, the existing `https://t.me/avantis_alertbot` remains the default. No Telegram token or SDK secret belongs in frontend environment variables.
+Set Vercel project root to `web/`. Node 22.12+; build `npm run build`; output `dist`. Configure `VITE_TELEGRAM_BOT_URL` to the actual bot URL. The default is `https://t.me/veranta_alertsbot`. No Telegram token or SDK secret belongs in frontend environment variables.
 
 ```sh
 cd web
@@ -61,4 +61,4 @@ python scripts/smoke_classify_exit.py
 python -c 'import app.bot'
 ```
 
-GitHub Actions runs offline tests, frontend build and Docker build. The live SDK smoke (`scripts/smoke_sdk_positions.py <wallet>`) needs operator credentials. Launch acceptance: fresh user starts, subscribes, sees correct live positions, receives a controlled warning, survives worker restart and temporary delivery failure, then mutes/unmutes and stops successfully. Do not open a risky trade solely to test alerts.
+GitHub Actions runs offline tests, frontend build and Docker build. The live SDK smoke (`scripts/smoke_sdk_positions.py <wallet>`) uses public reads; no signing credentials are required. Launch acceptance: fresh user starts, subscribes, sees correct live positions, receives a controlled warning, survives worker restart and temporary delivery failure, then mutes/unmutes and stops successfully. Do not open a risky trade solely to test alerts.

@@ -37,8 +37,8 @@ LIQ_THRESHOLDS = PNL_ALERT_LEVELS
 @dataclass(frozen=True)
 class Settings:
     telegram_bot_token: str
-    veranta_private_key: str
-    veranta_trader_address: str
+    veranta_private_key: str | None
+    veranta_trader_address: str | None
     veranta_network: str
     hot_poll_seconds: float
     idle_poll_seconds: float
@@ -66,16 +66,9 @@ def load_settings() -> Settings:
         "2) Copy the token into .env (see .env.example)\n"
         "3) Re-run the bot",
     )
-    private_key = _require(
-        "VERANTA_PRIVATE_KEY",
-        "Generate a service API/delegate key at https://delegate.veranta.xyz/\n"
-        "and set VERANTA_PRIVATE_KEY in .env (Model A — service-owned only).",
-    )
-    trader = _require(
-        "VERANTA_TRADER_ADDRESS",
-        "Set VERANTA_TRADER_ADDRESS to the operator wallet that authorized\n"
-        "the API key (https://delegate.veranta.xyz/).",
-    )
+    # Public positions and market data need no signer. Keep optional legacy config.
+    private_key = os.getenv("VERANTA_PRIVATE_KEY") or os.getenv("AVANTIS_PRIVATE_KEY") or None
+    trader = os.getenv("VERANTA_TRADER_ADDRESS") or os.getenv("AVANTIS_TRADER_ADDRESS") or None
     db = Path(os.getenv("SQLITE_PATH", "data/bot.db"))
     if not db.is_absolute():
         db = ROOT / db

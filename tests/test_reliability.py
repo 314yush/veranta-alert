@@ -142,3 +142,10 @@ class Reliability(unittest.IsolatedAsyncioTestCase):
         monitor.started=time.time()-600
         monitor.last_poll=monitor.last_success=monitor.last_prices=time.time()
         self.assertEqual((await monitor.health_snapshot())['status'],'degraded')
+    async def test_watch_only_startup_needs_no_trading_key(self):
+        from unittest.mock import patch
+        from app.config import load_settings
+        with patch.dict('os.environ', {'TELEGRAM_BOT_TOKEN':'test'}, clear=True):
+            settings=load_settings()
+            self.assertIsNone(settings.veranta_private_key)
+            self.assertIsNone(settings.veranta_trader_address)

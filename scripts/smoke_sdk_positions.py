@@ -31,21 +31,6 @@ async def main() -> None:
     trader = (os.getenv("VERANTA_TRADER_ADDRESS") or os.getenv("AVANTIS_TRADER_ADDRESS") or "").strip()
     network = (os.getenv("VERANTA_NETWORK") or os.getenv("AVANTIS_NETWORK") or "mainnet").strip()
 
-    missing = []
-    if not pk:
-        missing.append("AVANTIS_PRIVATE_KEY")
-    if not trader:
-        missing.append("AVANTIS_TRADER_ADDRESS")
-    if missing:
-        print(
-            "Missing Veranta credentials: "
-            + ", ".join(missing)
-            + "\nGenerate a service API key at https://delegate.veranta.xyz/ "
-            "and set them in .env (Model A).",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-
     from app.veranta_sdk import VerantaSDK, _pnl_for_sdk_position
 
     print(f"network={network} trader(operator)={trader}")
@@ -53,8 +38,8 @@ async def main() -> None:
     print(f"fetching positions for watch wallet={wallet} …")
 
     sdk = VerantaSDK(
-        private_key=pk,
-        trader_address=trader,
+        private_key=pk or None,
+        trader_address=trader or None,
         network=network,
     )
     try:

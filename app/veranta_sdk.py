@@ -177,8 +177,8 @@ class VerantaSDK:
     def __init__(
         self,
         *,
-        private_key: str,
-        trader_address: str,
+        private_key: str | None = None,
+        trader_address: str | None = None,
         network: str = "mainnet",
         mark_max_age_seconds: float | None = None,
         hermes_rest_url: str | None = None,

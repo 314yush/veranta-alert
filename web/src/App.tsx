@@ -1,6 +1,6 @@
 import type { ReactNode } from 'react'
 
-const BOT_URL = import.meta.env.VITE_TELEGRAM_BOT_URL || 'https://t.me/avantis_alertbot'
+const BOT_URL = import.meta.env.VITE_TELEGRAM_BOT_URL || 'https://t.me/veranta_alertsbot'
 const BOT_LABEL = BOT_URL.replace('https://', '')
 
 function TelegramIcon({ className }: { className?: string }) {
