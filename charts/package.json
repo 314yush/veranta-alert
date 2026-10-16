@@ -1,0 +1,14 @@
+{
+  "name": "avantis-lw-chart-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Headless TradingView lightweight-charts → PNG for Avantis alert bot",
+  "scripts": {
+    "render": "node render.mjs"
+  },
+  "dependencies": {
+    "lightweight-charts": "^4.2.1",
+    "playwright-core": "^1.49.0"
+  }
+}

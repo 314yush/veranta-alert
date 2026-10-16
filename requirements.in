@@ -1,0 +1,6 @@
+veranta-sdk==2.2.0
+python-telegram-bot[job-queue]==22.8
+python-dotenv==1.2.4
+aiosqlite==0.22.1
+httpx==0.28.1
+pillow==12.3.0

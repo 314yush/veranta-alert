@@ -1,0 +1,4 @@
+Geist Sans and Geist Mono
+Copyright (c) 2024 Vercel, Inc.
+SIL Open Font License 1.1
+https://github.com/vercel/geist-font
