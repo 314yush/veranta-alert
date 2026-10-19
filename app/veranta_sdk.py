@@ -230,6 +230,17 @@ class VerantaSDK:
         """pair_index -> human source string from the last mark resolve."""
         return dict(self._last_mark_sources)
 
+    async def fetch_close_history(self, trader: str) -> list[dict]:
+        """Paired close fills in human units; API cache can lag up to five minutes."""
+        if not is_valid_address(trader):
+            raise ValueError("Invalid trader address")
+        base = self.client.config.history_api_url.rstrip('/')
+        data = await self.client.transport.json(
+            'GET', f'{base}/v2/history/intelligence/trades/{trader}')
+        if not isinstance(data, dict) or data.get('success') is not True or not isinstance(data.get('trades'), list):
+            raise ValueError('Invalid close-history response')
+        return data['trades']
+
     async def aclose(self) -> None:
         await self._stop_lazer_stream()
         await self._client.aclose()

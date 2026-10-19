@@ -77,6 +77,17 @@ class Database:
         self._db.row_factory = aiosqlite.Row
         await self._db.executescript(
             """
+            CREATE TABLE IF NOT EXISTS pending_closes (
+                chat_id INTEGER NOT NULL,
+                position_key TEXT NOT NULL,
+                wallet TEXT NOT NULL,
+                payload_json TEXT NOT NULL,
+                detected_at REAL NOT NULL,
+                next_attempt REAL NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                notified INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (chat_id, position_key)
+            );
             CREATE TABLE IF NOT EXISTS outbox (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id INTEGER NOT NULL,
@@ -194,7 +205,7 @@ class Database:
     async def upsert_subscription(self, chat_id: int, wallet: str) -> Subscription:
         previous = await self.get_subscription(chat_id)
         if previous and previous.wallet != wallet.lower():
-            for table in ("alert_state", "position_snapshots", "outbox"):
+            for table in ("alert_state", "position_snapshots", "outbox", "pending_closes"):
                 await self.db.execute(f"DELETE FROM {table} WHERE chat_id=?", (chat_id,))
         now = time.time()
         await self.db.execute(
@@ -244,6 +255,7 @@ class Database:
     @serialized
     async def set_muted(self, chat_id: int, muted: bool) -> bool:
         if muted:
+            await self.db.execute("DELETE FROM pending_closes WHERE chat_id=?", (chat_id,))
             await self.db.execute("DELETE FROM outbox WHERE chat_id=?", (chat_id,))
         cur = await self.db.execute(
             "UPDATE subscriptions SET muted = ?, updated_at = ? WHERE chat_id = ?",
@@ -262,6 +274,7 @@ class Database:
 
     @serialized
     async def delete_subscription(self, chat_id: int) -> bool:
+        await self.db.execute("DELETE FROM pending_closes WHERE chat_id=?", (chat_id,))
         await self.db.execute("DELETE FROM outbox WHERE chat_id=?", (chat_id,))
         await self.db.execute(
             "DELETE FROM alert_state WHERE chat_id = ?", (chat_id,)

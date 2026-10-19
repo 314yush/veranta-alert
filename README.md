@@ -74,3 +74,9 @@ GitHub Actions runs offline tests, frontend build and Docker build. The live SDK
 Position cards use the same 1080×720 renderer as alert cards, with tightly spaced 5-minute candles and a two-hour window. The price scale uses observed highs/lows plus 6% padding; distant risk levels stay in the stats grid. Changed subsecond observations are retained before OHLC aggregation, gaps stay empty, and isolated observations appear as dots. Recent Veranta observations are preferred; official five-minute candles and explicitly labeled spot references are fallbacks.
 
 `python scripts/preview_trade_durations.py` generates simulated 2m/5m/10m/10h examples using 5s/15s/30s/30m candles. These are renderer previews, not an automatic runtime timeframe selector. Local tick retention remains two hours.
+
+## Confirmed close summaries
+
+Missing positions are queued for history reconciliation, not classified from their last mark. A separate 15-second job resolves the original position using wallet, market, side, open timestamp and originating order ID, then sends the confirmed close reason, final execution price, net realized PnL (including earlier partial fills), and transaction link. Zero PnL is a valid result. Ambiguous identities and incomplete results remain pending rather than being guessed.
+
+The public paired-history endpoint (`/v2/history/intelligence/trades/{wallet}`, documented at https://api.veranta.xyz/docs/) caches results for five minutes. After 60 seconds, a single syncing notice may be sent; retries back off to five minutes and persist across restarts. Result enqueue and pending-row deletion are atomic. Mute, stop, wallet switches and reappearing positions cancel pending reconciliation. Previously sent generic notices cannot be reconstructed automatically because the old version discarded their position snapshots.

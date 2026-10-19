@@ -421,7 +421,7 @@ def format_proximity_alert(
 
 
 def format_exit_alert(kind: str, pos: Position, mark: float | None) -> str:
-    return f"<b>{_h(display_pair(pos.symbol))} {pos.side} closed.</b>\nFinal PnL and close reason are not confirmed yet."
+    return f"<b>{_h(display_pair(pos.symbol))} {pos.side} closed.</b>\nSettlement details are still syncing. I’ll keep checking for the confirmed result."
 
 
 HELP_TEXT = """\
@@ -443,7 +443,7 @@ Or send a Base wallet (<code>0x</code> + 40 hex) to start watching.
 • Liquidation warnings within 45 / 25 / 10 collateral points of the API liquidation price
 • TP proximity when within N PnL pts of take-profit (default 10)
 • SL proximity when within N PnL pts of stop-loss (default 10)
-• Closed-position notices; final PnL and reason require confirmed history
+• Confirmed close summaries with realized PnL and execution reason
 • /positions: one summary; tap a position for entry / mark / liq / TP / SL chart
 • Buttons: Positions · Mute · Settings · Open Veranta
 

@@ -119,6 +119,10 @@ def main() -> None:
         app.bot_data["alerter"] = alerter
         monitor = Monitor(app, db, client, alerter)
         app.bot_data["monitor"] = monitor
+        from .close_results import CloseResultWatcher
+        close_results = CloseResultWatcher(db, client)
+        app.bot_data["close_results"] = close_results
+        app.job_queue.run_repeating(close_results.tick, interval=15, first=8, name="close-result-monitor")
         from .limit_fills import LimitFillWatcher
         fills = LimitFillWatcher(db, client)
         monitor.fill_watcher = fills

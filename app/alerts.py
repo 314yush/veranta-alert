@@ -225,24 +225,15 @@ class AlertEngine:
             if prev.position_key in current_keys:
                 await self.db.delete_position_snapshots(chat_id, [key])
                 continue
-            mark = prev.mark_price
-            for p in positions:
-                if p.pair_index == prev.pair_index and p.mark_price:
-                    mark = p.mark_price
-                    break
-            kind = classify_exit(prev, mark, liq_pnl_percent=self.liq_pnl_percent)
-            if not muted and _exit_enabled(kind, prefs):
-                alerts.append(
-                    OutgoingAlert(
-                        text=format_exit_alert(kind, prev, mark),
-                        kind=kind,
-                        attach_chart=(kind == "liq"),
-                        position=prev,
-                    )
+            if not muted:
+                await self.db.db.execute(
+                    "INSERT OR IGNORE INTO pending_closes (chat_id,position_key,wallet,payload_json,detected_at) VALUES (?,?,?,?,?)",
+                    (chat_id,prev.position_key,prev.trader.lower(),raw,time.time()),
                 )
             await self.db.delete_position_snapshots(chat_id, [key])
 
         for pos in positions:
+            await self.db.db.execute("DELETE FROM pending_closes WHERE chat_id=? AND position_key=?", (chat_id,pos.position_key))
             await self.db.save_position_snapshot(
                 chat_id, pos.position_key, position_to_json(pos)
             )
