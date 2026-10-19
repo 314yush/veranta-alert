@@ -230,6 +230,29 @@ class VerantaSDK:
         """pair_index -> human source string from the last mark resolve."""
         return dict(self._last_mark_sources)
 
+    async def fetch_active_twaps(self, trader: str):
+        """All currently filling TWAPs; SDK list pagination is zero-based."""
+        from .twaps import parse_active_twaps
+        trader = normalize_address(trader)
+        if not is_valid_address(trader):
+            raise ValueError("Invalid trader address")
+        await self.ensure_pairs()
+        rows, seen = [], set()
+        for page in range(20):
+            batch = await self.client.account.twaps(
+                trader=trader, include_canceled=False, page=page, page_size=50)
+            if not isinstance(batch, list):
+                raise ValueError("Invalid TWAP list response")
+            if batch:
+                ids = tuple(row.get('twap', {}).get('twapId') for row in batch if isinstance(row, dict))
+                if ids in seen:
+                    raise ValueError("TWAP pagination did not advance")
+                seen.add(ids)
+            rows.extend(batch)
+            if len(batch) < 50:
+                return parse_active_twaps(rows, trader, self._pair_symbols)
+        raise ValueError("TWAP history exceeds bounded scan; status incomplete")
+
     async def fetch_close_history(self, trader: str) -> list[dict]:
         """Paired close fills in human units; API cache can lag up to five minutes."""
         if not is_valid_address(trader):

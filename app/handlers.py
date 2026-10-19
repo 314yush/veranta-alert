@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from io import BytesIO
 
 from telegram import Update
@@ -72,6 +72,7 @@ class PositionsLoad:
     muted: bool
     page: int = 0
     available: bool = True
+    twaps: list = field(default_factory=list)
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -111,11 +112,23 @@ async def _load_positions(
             False,
             available=False,
         )
-    page = min(max(0, page), max(0, (len(positions)-1)//8))
-    text = format_positions(positions, sub.wallet, page)
+    # TWAP availability must never hide valid open positions.
+    import asyncio
+    twaps, twap_error = [], False
+    try:
+        twaps = await asyncio.wait_for(_client(context).fetch_active_twaps(sub.wallet), timeout=6)
+    except Exception:
+        twap_error = True
+        logger.warning("TWAP status unavailable chat=%s", chat_id)
+    from .twaps import position_rows
+    page = min(max(0, page), max(0, (len(position_rows(positions,twaps))-1)//8))
+    text = format_positions(positions, sub.wallet, page, twaps=twaps)
+    if twap_error:
+        text += "\n\n<i>TWAP status unavailable — refresh to retry.</i>"
     if sub.muted and not positions:
         text += "\n\n<i>Alerts muted — /unmute to resume</i>"
-    return PositionsLoad(text, positions, bool(sub.muted), page)
+    return PositionsLoad(text, positions, bool(sub.muted), page, twaps=twaps)
+
 
 
 async def _deliver_positions(
@@ -125,7 +138,7 @@ async def _deliver_positions(
     *,
     status_message=None,  # noqa: ANN001
 ) -> None:
-    kwargs = html_send_kwargs(reply_markup=positions_keyboard(load.positions, load.page))
+    kwargs = html_send_kwargs(reply_markup=positions_keyboard(load.positions, load.page, twaps=load.twaps))
     if status_message is not None:
         try:
             await status_message.edit_text(load.html, **kwargs)

@@ -179,10 +179,15 @@ def alert_keyboard() -> InlineKeyboardMarkup:
     )
 
 
-def positions_keyboard(positions=None, page=0):
+def positions_keyboard(positions=None, page=0, *, twaps=()):
+    from .twaps import position_rows
     positions = positions or []
     rows = []
-    for pos in positions[page*8:(page+1)*8]:
+    entries = position_rows(positions, twaps)
+    for entry in entries[page*8:(page+1)*8]:
+        pos = entry.position
+        if pos is None:
+            continue
         rows.append([InlineKeyboardButton(
             f"{display_pair(pos.symbol)} {pos.side} · Chart",
             callback_data=f"chart:{pos.chart_key}",
@@ -190,7 +195,7 @@ def positions_keyboard(positions=None, page=0):
     nav = []
     if page:
         nav.append(InlineKeyboardButton("Previous", callback_data=f"positions:{page-1}"))
-    if len(positions) > (page+1)*8:
+    if len(entries) > (page+1)*8:
         nav.append(InlineKeyboardButton("Next", callback_data=f"positions:{page+1}"))
     if nav:
         rows.append(nav)
@@ -322,18 +327,34 @@ def format_position_card(pos: Position) -> str:
     )
 
 
-def format_positions(positions: list[Position], wallet: str, page=0) -> str:
-    if not positions:
+def format_positions(positions: list[Position], wallet: str, page=0, *, twaps=()) -> str:
+    from .twaps import position_rows, progress_label
+    if not positions and not twaps:
         return "<b>No open positions.</b>\nI’m still watching this wallet. I’ll check for new trades automatically."
-    known = [p.unrealized_pnl_usdc for p in positions if p.unrealized_pnl_usdc is not None]
-    total = _signed_money(sum(known)) if len(known) == len(positions) else "unavailable (missing data)"
-    lines = [f"<b>{len(positions)} open · Net PnL {total}</b>"]
-    for pos in positions[page*8:(page+1)*8]:
-        distance = pos.distance_to_liq_pct()
-        risk = f"Liq {max(0,distance):.2f}% away" if distance is not None else "Liq distance unavailable"
-        stops = f"TP {_price(pos.tp) if pos.tp else 'not set'} · SL {_price(pos.sl) if pos.sl else 'not set'}"
-        lines.append(f"<b>{_h(display_pair(pos.symbol))} {pos.side}</b> · {_h(_pnl_combo(pos))}\n{risk} · {stops}")
-    lines.append("Tap a position for its chart and price levels.")
+    lines = []
+    if positions:
+        known = [p.unrealized_pnl_usdc for p in positions if p.unrealized_pnl_usdc is not None]
+        total = _signed_money(sum(known)) if len(known) == len(positions) else "unavailable (missing data)"
+        lines.append(f"<b>{len(positions)} open · Net PnL {total}</b>")
+    if twaps:
+        lines.append(f"<b>{len(twaps)} TWAP{'s' if len(twaps) != 1 else ''} filling</b>")
+    for row in position_rows(positions, twaps)[page*8:(page+1)*8]:
+        pos = row.position
+        if pos is not None:
+            distance = pos.distance_to_liq_pct()
+            risk = f"Liq {max(0,distance):.2f}% away" if distance is not None else "Liq distance unavailable"
+            stops = f"TP {_price(pos.tp) if pos.tp else 'not set'} · SL {_price(pos.sl) if pos.sl else 'not set'}"
+            text = f"<b>{_h(display_pair(pos.symbol))} {pos.side}</b> · {_h(_pnl_combo(pos))}\n{risk} · {stops}"
+        else:
+            twap = row.twaps[0]
+            text = f"<b>{_h(display_pair(twap.symbol))} {twap.side}</b>"
+        for twap in row.twaps[:3]:
+            text += f"\n{progress_label(twap)}"
+        if len(row.twaps)>3:
+            text += f"\n+{len(row.twaps)-3} more active TWAPs"
+        lines.append(text)
+    if positions:
+        lines.append("Tap a position for its chart and price levels.")
     return "\n\n".join(lines)
 
 

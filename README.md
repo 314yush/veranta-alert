@@ -80,3 +80,9 @@ Position cards use the same 1080×720 renderer as alert cards, with tightly spac
 Missing positions are queued for history reconciliation, not classified from their last mark. A separate 15-second job resolves the original position using wallet, market, side, open timestamp and originating order ID, then sends the confirmed close reason, final execution price, net realized PnL (including earlier partial fills), and transaction link. Zero PnL is a valid result. Ambiguous identities and incomplete results remain pending rather than being guessed.
 
 The public paired-history endpoint (`/v2/history/intelligence/trades/{wallet}`, documented at https://api.veranta.xyz/docs/) caches results for five minutes. After 60 seconds, a single syncing notice may be sent; retries back off to five minutes and persist across restarts. Result enqueue and pending-row deletion are atomic. Mute, stop, wallet switches and reappearing positions cancel pending reconciliation. Previously sent generic notices cannot be reconstructed automatically because the old version discarded their position snapshots.
+
+## TWAPs in `/positions`
+
+The command reads active TWAPs alongside normal positions. Filling or partially filled orders show confirmed slice progress. When execution records identify an existing position, progress appears on that position row; otherwise the pending order has a separate row and contributes neither to open-position count nor net PnL. Completed, fully executed, canceled and not-yet-started TWAP orders are omitted. Any remaining actual position stays visible normally.
+
+TWAP pagination is bounded and errors/timeouts produce an explicit “TWAP status unavailable” note without hiding open positions. Status refreshes on `/positions` or Refresh; this feature does not send per-slice notifications. Wire format verified against the read-only service at https://prod-api.veranta.xyz/twap/api.
